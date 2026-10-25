@@ -625,6 +625,74 @@ app.post("/notify", async (req, res) => {
 	}
 });
 
+const LOG_WEBHOOK_URL = process.env.LOG_WEBHOOK_URL || "";
+
+const LEVELS = {
+	info: { color: 0x8b5cf6, emoji: "🐾", rank: 0 },
+	success: { color: 0x2ecc71, emoji: "✅", rank: 1 },
+	warn: { color: 0xf5a623, emoji: "⚠️", rank: 2 },
+	alert: { color: 0xff3b5c, emoji: "🚨", rank: 3 },
+};
+
+app.post("/log", async (req, res) => {
+	if (!API_KEY || req.get("x-api-key") !== API_KEY) return res.status(401).send("non autorise");
+	if (!LOG_WEBHOOK_URL) return res.status(500).send("webhook de logs non configure");
+
+	const b = req.body || {};
+	if (!Array.isArray(b.entries) || b.entries.length === 0 || b.entries.length > 50) {
+		return res.status(400).send("entries invalides");
+	}
+
+	let top = "info";
+	const lines = [];
+	for (const e of b.entries) {
+		if (!e || typeof e.m !== "string") continue;
+		const lvl = LEVELS[e.l] ? e.l : "info";
+		if (LEVELS[lvl].rank > LEVELS[top].rank) top = lvl;
+		const cat = String(e.c || "Log").slice(0, 24);
+		const t = Number.isInteger(e.t) ? e.t : Math.floor(Date.now() / 1000);
+		lines.push(`<t:${t}:T> ${LEVELS[lvl].emoji} **${cat}** ${e.m.replace(/\s+/g, " ").slice(0, 400)}`);
+	}
+	if (lines.length === 0) return res.status(400).send("rien a envoyer");
+
+	const chunks = [];
+	let current = "";
+	for (const line of lines) {
+		if (current && current.length + line.length + 1 > 3800) {
+			chunks.push(current);
+			current = "";
+		}
+		current += (current ? "\n" : "") + line;
+	}
+	if (current) chunks.push(current);
+
+	const embeds = chunks.slice(0, 10).map((description, i, arr) => {
+		const embed = { color: LEVELS[top].color, description };
+		if (i === arr.length - 1) {
+			embed.footer = { text: "Serveur " + String(b.jobId || "Studio").slice(0, 8) };
+			embed.timestamp = new Date().toISOString();
+		}
+		return embed;
+	});
+
+	try {
+		const r = await fetch(LOG_WEBHOOK_URL, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ username: "Meow Logs", allowed_mentions: { parse: [] }, embeds }),
+			signal: AbortSignal.timeout(10000),
+		});
+		if (!r.ok) {
+			console.error("Discord (logs) a repondu " + r.status + " : " + (await r.text()).slice(0, 200));
+			return res.status(502).send("discord error");
+		}
+		res.send("ok");
+	} catch (e) {
+		console.error(e);
+		res.status(500).send("Erreur");
+	}
+});
+
 setupFonts().then(() => {
 	app.listen(PORT, () => console.log("API prete sur le port " + PORT));
 });
