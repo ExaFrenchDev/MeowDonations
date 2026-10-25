@@ -563,8 +563,6 @@ async function renderCard(donorId, ownerId, amount) {
 	return canvas.toBuffer("image/png");
 }
 
-//   DISCORD_WEBHOOK_URL : URL du webhook Discord (discord.com/api/webhooks/...)
-//   API_KEY             : cle secrete partagee avec le script Roblox
 const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL || "";
 const API_KEY = process.env.API_KEY || "";
 
@@ -606,32 +604,13 @@ app.post("/notify", async (req, res) => {
 	const donor = String(b.donorId || "");
 	const owner = String(b.ownerId || "");
 	const amount = Number(b.amount);
-	const ownerShare = Number(b.ownerShare) || 0;
 	if (!validIds(donor, owner, amount)) return res.status(400).send("parametres invalides");
 
 	try {
-		const [png, donorUser, ownerUser] = await Promise.all([
-			renderCard(donor, owner, amount),
-			getUser(donor),
-			getUser(owner),
-		]);
-
-		const payload = {
-			username: "Donations",
-			embeds: [
-				{
-					color: 0xff7ac8,
-					description: `🐾 **${donorUser.displayName}** (@${donorUser.name}) a donné **${amount.toLocaleString("en-US")} R$** à **${ownerUser.displayName}** (@${ownerUser.name})`,
-					fields: [{ name: "Part du receveur", value: ownerShare + " R$", inline: true }],
-					image: { url: "attachment://donation.png" },
-					footer: { text: "Serveur : " + String(b.jobId || "?").slice(0, 40) },
-					timestamp: new Date().toISOString(),
-				},
-			],
-		};
+		const png = await renderCard(donor, owner, amount);
 
 		const form = new FormData();
-		form.append("payload_json", JSON.stringify(payload));
+		form.append("payload_json", JSON.stringify({ username: "Meow Donations" }));
 		form.append("files[0]", new Blob([png], { type: "image/png" }), "donation.png");
 
 		const r = await fetch(DISCORD_WEBHOOK_URL, { method: "POST", body: form, signal: AbortSignal.timeout(10000) });
