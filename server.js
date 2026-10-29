@@ -83,11 +83,9 @@ function getAvatar(id) {
 	});
 }
 
-// Avatar des donateurs anonymes.
-// Plus fiable : mets une image "anon.png" a cote de ce fichier, elle sera utilisee en priorite.
 function getAnonAvatar() {
 	return cached("anon-avatar", async () => {
-		const local = path.join(__dirname, "anon.png");
+		const local = path.join(__dirname, "anon.jpg");
 		try {
 			if (fs.existsSync(local)) return await loadImage(local);
 		} catch {}
@@ -450,7 +448,6 @@ function drawCatPaws(ctx, cx, top) {
 }
 
 async function renderCard(donorId, ownerId, amount, anonymous = false) {
-	// Pour un anonyme, aucun appel Roblox n'est fait pour le donateur
 	const [donor, owner, donorImg, ownerImg] = await Promise.all([
 		anonymous ? { name: null, displayName: ANON_NAME } : getUser(donorId),
 		getUser(ownerId),
@@ -630,7 +627,6 @@ app.post("/notify", async (req, res) => {
 	if (!DISCORD_WEBHOOK_URL) return res.status(500).send("webhook non configure");
 
 	const b = req.body || {};
-	// donorId = 0 est aussi traite comme anonyme (compatibilite avec l'ancien format)
 	const anonymous = b.anonymous === true || Number(b.donorId) === 0;
 	const donor = anonymous ? "" : String(b.donorId || "");
 	const owner = String(b.ownerId || "");
