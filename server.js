@@ -17,6 +17,9 @@ const COLORS = {
 };
 const MAX_AMOUNT = 10000000;
 
+const ANON_NAME = "Anonyme";
+const ANON_ASSET_ID = "13218159361";
+
 const FONT_DIR = path.join(__dirname, "fonts");
 const FONTS = {
 	"Poppins-Bold.ttf": ["PoppinsBold", "https://github.com/google/fonts/raw/main/ofl/poppins/Poppins-Bold.ttf"],
@@ -68,6 +71,28 @@ function getAvatar(id) {
 	return cached("a" + id, async () => {
 		try {
 			const api = `https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds=${id}&size=420x420&format=Png&isCircular=false`;
+			const res = await fetch(api, { signal: AbortSignal.timeout(4000) });
+			const d = await res.json();
+			const url = d && d.data && d.data[0] && d.data[0].imageUrl;
+			if (!url) return null;
+			const img = await fetch(url, { signal: AbortSignal.timeout(4000) });
+			return await loadImage(Buffer.from(await img.arrayBuffer()));
+		} catch {
+			return null;
+		}
+	});
+}
+
+// Avatar des donateurs anonymes.
+// Plus fiable : mets une image "anon.png" a cote de ce fichier, elle sera utilisee en priorite.
+function getAnonAvatar() {
+	return cached("anon-avatar", async () => {
+		const local = path.join(__dirname, "anon.png");
+		try {
+			if (fs.existsSync(local)) return await loadImage(local);
+		} catch {}
+		try {
+			const api = `https://thumbnails.roblox.com/v1/assets?assetIds=${ANON_ASSET_ID}&size=420x420&format=Png&isCircular=false`;
 			const res = await fetch(api, { signal: AbortSignal.timeout(4000) });
 			const d = await res.json();
 			const url = d && d.data && d.data[0] && d.data[0].imageUrl;
@@ -424,11 +449,12 @@ function drawCatPaws(ctx, cx, top) {
 	}
 }
 
-async function renderCard(donorId, ownerId, amount) {
+async function renderCard(donorId, ownerId, amount, anonymous = false) {
+	// Pour un anonyme, aucun appel Roblox n'est fait pour le donateur
 	const [donor, owner, donorImg, ownerImg] = await Promise.all([
-		getUser(donorId),
+		anonymous ? { name: null, displayName: ANON_NAME } : getUser(donorId),
 		getUser(ownerId),
-		getAvatar(donorId),
+		anonymous ? getAnonAvatar() : getAvatar(donorId),
 		getAvatar(ownerId),
 	]);
 
@@ -504,7 +530,7 @@ async function renderCard(donorId, ownerId, amount) {
 
 	drawWhiskers(ctx, LX, AV_Y, AV_R, 1);
 	drawWhiskers(ctx, RX, AV_Y, AV_R, -1);
-	drawAvatar(ctx, donorImg, LX, AV_Y, AV_R, donor.displayName[0] || "?");
+	drawAvatar(ctx, donorImg, LX, AV_Y, AV_R, anonymous ? "?" : (donor.displayName[0] || "?"));
 	drawAvatar(ctx, ownerImg, RX, AV_Y, AV_R, owner.displayName[0] || "?");
 
 	const chipY = AV_Y + AV_R + 2;
@@ -520,9 +546,11 @@ async function renderCard(donorId, ownerId, amount) {
 		while (ctx.measureText(dn).width > 190 && dn.length > 3) dn = dn.slice(0, -1);
 		if (dn !== u.displayName) dn += "…";
 		ctx.fillText(dn, cx, C.y + 222);
-		ctx.fillStyle = COLORS.muted;
-		ctx.font = '15px "PoppinsMedium", sans-serif';
-		ctx.fillText("@" + u.name, cx, C.y + 245);
+		if (u.name) {
+			ctx.fillStyle = COLORS.muted;
+			ctx.font = '15px "PoppinsMedium", sans-serif';
+			ctx.fillText("@" + u.name, cx, C.y + 245);
+		}
 	}
 
 	const amountText = amount.toLocaleString("en-US");
@@ -571,9 +599,9 @@ app.use(express.json({ limit: "10kb" }));
 
 app.get("/", (_req, res) => res.send("OK"));
 
-function validIds(donor, owner, amount) {
+function validIds(donor, owner, amount, anonymous) {
 	return (
-		/^\d{1,15}$/.test(donor) &&
+		(anonymous || /^\d{1,15}$/.test(donor)) &&
 		/^\d{1,15}$/.test(owner) &&
 		Number.isInteger(amount) &&
 		amount > 0 &&
@@ -583,12 +611,13 @@ function validIds(donor, owner, amount) {
 
 if (process.env.PREVIEW === "1") {
 	app.get("/donation", async (req, res) => {
-		const donor = String(req.query.donor || "");
+		const anonymous = req.query.anonymous === "1";
+		const donor = anonymous ? "" : String(req.query.donor || "");
 		const owner = String(req.query.owner || "");
 		const amount = Number(req.query.amount);
-		if (!validIds(donor, owner, amount)) return res.status(400).send("parametres invalides");
+		if (!validIds(donor, owner, amount, anonymous)) return res.status(400).send("parametres invalides");
 		try {
-			res.set("Content-Type", "image/png").send(await renderCard(donor, owner, amount));
+			res.set("Content-Type", "image/png").send(await renderCard(donor, owner, amount, anonymous));
 		} catch (e) {
 			console.error(e);
 			res.status(500).send("Erreur de generation");
@@ -601,13 +630,15 @@ app.post("/notify", async (req, res) => {
 	if (!DISCORD_WEBHOOK_URL) return res.status(500).send("webhook non configure");
 
 	const b = req.body || {};
-	const donor = String(b.donorId || "");
+	// donorId = 0 est aussi traite comme anonyme (compatibilite avec l'ancien format)
+	const anonymous = b.anonymous === true || Number(b.donorId) === 0;
+	const donor = anonymous ? "" : String(b.donorId || "");
 	const owner = String(b.ownerId || "");
 	const amount = Number(b.amount);
-	if (!validIds(donor, owner, amount)) return res.status(400).send("parametres invalides");
+	if (!validIds(donor, owner, amount, anonymous)) return res.status(400).send("parametres invalides");
 
 	try {
-		const png = await renderCard(donor, owner, amount);
+		const png = await renderCard(donor, owner, amount, anonymous);
 
 		const form = new FormData();
 		form.append("payload_json", JSON.stringify({ username: "Meow Donations" }));
